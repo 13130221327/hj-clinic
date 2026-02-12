@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -86,8 +86,22 @@ def stats(records: list[dict]) -> dict[str, float | int]:
     }
 
 
-def render_index(records: list[dict], q_date: str, q_name: str) -> str:
+def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     all_records = sorted(load_records(), key=lambda x: (x.get("visit_date", ""), x.get("id", 0)), reverse=True)
+    patient_profiles: dict[str, dict[str, str]] = {}
+    for item in all_records:
+        name = str(item.get("patient_name", "")).strip()
+        if not name or name in patient_profiles:
+            continue
+        patient_profiles[name] = {
+            "gender": str(item.get("gender", "")).strip(),
+            "age": str(item.get("age", "")).strip(),
+            "phone": str(item.get("phone", "")).strip(),
+            "case_no": str(item.get("case_no", "")).strip(),
+        }
+
+    patient_json = json.dumps(patient_profiles, ensure_ascii=False)
+    patient_options = "".join(f"<option value='{escape(name)}'></option>" for name in patient_profiles)
     s = stats(all_records)
     today = date.today().isoformat()
     today_records = [r for r in all_records if r.get("visit_date", "") == today]
@@ -129,6 +143,9 @@ def render_index(records: list[dict], q_date: str, q_name: str) -> str:
     else:
         today_cards = "<div class='today-empty'>今天还没有就诊记录。</div>"
 
+    range_labels = {"day": "日", "week": "周", "month": "月", "all": "全部"}
+    active_range = q_range if q_range in range_labels else "day"
+
     return f"""
 <!doctype html>
 <html lang='zh-CN'>
@@ -160,6 +177,7 @@ def render_index(records: list[dict], q_date: str, q_name: str) -> str:
     textarea {{ min-height: 130px; resize: vertical; }}
     .inline {{ display: flex; gap: 10px; align-items: end; }}
     .btn {{ border: none; border-radius: 12px; padding: 12px 22px; font-size: 32px; cursor: pointer; }}
+    .btn.compact {{ font-size: 24px; padding: 10px 14px; }}
     .btn.cyan {{ background: #25b8d6; color: white; }}
     .btn.green {{ background: #11a84f; color: white; }}
     .btn.secondary {{ background: #29b8dd; color: white; }}
@@ -185,7 +203,10 @@ def render_index(records: list[dict], q_date: str, q_name: str) -> str:
     th, td {{ border-bottom: 1px solid #d8e8ee; padding: 10px; font-size: 24px; text-align: left; }}
     th {{ background: #ebf7fa; }}
     .note-cell {{ max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-    .filter {{ margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 10px; }}
+    .filter {{ margin-top: 16px; display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; }}
+    .quick-filters {{ margin-top: 10px; display:flex; gap: 8px; flex-wrap: wrap; }}
+    .quick-link {{ text-decoration:none; background:#8cbeca; color:white; padding: 8px 12px; border-radius: 8px; font-size: 22px; }}
+    .quick-link.active {{ background: var(--primary); }}
     .hidden {{ display: none; }}
     @media (max-width: 980px) {{
       .grid-2,.stats,.today-list,.fee-row,.filter {{ grid-template-columns: 1fr; }}
@@ -200,14 +221,14 @@ def render_index(records: list[dict], q_date: str, q_name: str) -> str:
 <div class='container'>
   <div class='tab-switch'>
     <button class='tab-btn active' data-tab='new'>新增患者</button>
-    <button class='tab-btn' data-tab='today'>今日记录</button>
+    <button class='tab-btn' data-tab='today'>患者记录</button>
   </div>
 
   <section class='panel' id='tab-new'>
     <h2>新增患者信息</h2>
     <form action='/add' method='post' id='patient-form'>
       <div class='grid-2'>
-        <div class='field'><label>姓名 *</label><input type='text' name='patient_name' required /></div>
+        <div class='field'><label>姓名 *</label><input type='text' name='patient_name' id='patient-name' list='patient-suggestions' required /></div>
         <div class='field'><label>性别 *</label><select name='gender' required><option value=''>请选择</option><option>男</option><option>女</option></select></div>
         <div class='field'><label>年龄 *</label><input type='number' min='0' name='age' required /></div>
         <div class='field'><label>电话</label><input type='text' name='phone' /></div>
@@ -215,8 +236,8 @@ def render_index(records: list[dict], q_date: str, q_name: str) -> str:
           <label>病历号</label>
           <div class='inline'>
             <input type='text' id='case-no' name='case_no' value='{generate_case_no()}' />
-            <button type='button' class='btn cyan' id='regen-case'>生成</button>
-            <button type='button' class='btn cyan' id='edit-case'>编辑</button>
+            <button type='button' class='btn cyan compact' id='regen-case'>生成</button>
+            <button type='button' class='btn cyan compact' id='edit-case'>编辑</button>
           </div>
         </div>
         <div class='field'><label>就诊日期 *</label><input type='date' name='visit_date' value='{today}' required /></div>
@@ -250,15 +271,22 @@ def render_index(records: list[dict], q_date: str, q_name: str) -> str:
   </section>
 
   <section class='panel hidden' id='tab-today'>
-    <h2>今日记录</h2>
+    <h2>患者记录</h2>
     <div class='today-list'>{today_cards}</div>
 
     <form method='get' class='filter'>
-      <input type='date' name='date' value='{escape(q_date)}' />
-      <input type='text' name='name' value='{escape(q_name)}' placeholder='按姓名模糊筛选' />
+      <input type='hidden' name='range' value='{escape(active_range)}' />
+      <input type='text' name='name' value='{escape(q_name)}' placeholder='按姓名筛选（将显示该患者全部记录）' list='patient-suggestions' />
       <button class='btn secondary' type='submit'>筛选</button>
-      <a class='btn' style='text-decoration:none;text-align:center;background:#8cbeca;color:white' href='/'>重置</a>
+      <a class='btn' style='text-decoration:none;text-align:center;background:#8cbeca;color:white' href='/?range={escape(active_range)}'>重置</a>
     </form>
+    <div class='quick-filters'>
+      <a class='quick-link {"active" if active_range == "day" else ""}' href='/?range=day'>日</a>
+      <a class='quick-link {"active" if active_range == "week" else ""}' href='/?range=week'>周</a>
+      <a class='quick-link {"active" if active_range == "month" else ""}' href='/?range=month'>月</a>
+      <a class='quick-link {"active" if active_range == "all" else ""}' href='/?range=all'>全部</a>
+      <span style='font-size:20px;color:#4f7f90;line-height:36px'>当前：按{range_labels[active_range]}查看</span>
+    </div>
     <div class='list-wrap'>
       <table>
         <thead><tr><th>日期</th><th>姓名</th><th>电话</th><th>项目</th><th>费用</th><th>支付</th><th>备注</th><th>操作</th></tr></thead>
@@ -269,6 +297,24 @@ def render_index(records: list[dict], q_date: str, q_name: str) -> str:
 </div>
 <script>
 (function() {{
+  const patientProfiles = {patient_json};
+  const patientInput = document.getElementById('patient-name');
+  const profileFields = {{
+    gender: document.querySelector("select[name='gender']"),
+    age: document.querySelector("input[name='age']"),
+    phone: document.querySelector("input[name='phone']"),
+    case_no: document.querySelector("input[name='case_no']"),
+  }};
+
+  function fillPatientInfo() {{
+    const profile = patientProfiles[patientInput?.value.trim() || ''];
+    if (!profile) return;
+    Object.keys(profileFields).forEach(key => {{
+      if (profileFields[key]) profileFields[key].value = profile[key] || '';
+    }});
+  }}
+  patientInput?.addEventListener('change', fillPatientInfo);
+  patientInput?.addEventListener('blur', fillPatientInfo);
   const tabs = document.querySelectorAll('.tab-btn');
   const tabNew = document.getElementById('tab-new');
   const tabToday = document.getElementById('tab-today');
@@ -344,6 +390,9 @@ def render_index(records: list[dict], q_date: str, q_name: str) -> str:
   addRow();
 }})();
 </script>
+<datalist id='patient-suggestions'>
+  {patient_options}
+</datalist>
 </body>
 </html>
 """
@@ -387,16 +436,24 @@ class AppHandler(BaseHTTPRequestHandler):
             return
 
         params = parse_qs(parsed.query)
-        q_date = (params.get("date") or [""])[0].strip()
         q_name = (params.get("name") or [""])[0].strip()
+        q_range = (params.get("range") or ["day"])[0].strip() or "day"
 
         records = sorted(load_records(), key=lambda x: (x.get("visit_date", ""), x.get("id", 0)), reverse=True)
-        if q_date:
-            records = [r for r in records if r.get("visit_date", "") == q_date]
         if q_name:
             records = [r for r in records if q_name in str(r.get("patient_name", ""))]
+        else:
+            today = date.today()
+            if q_range == "day":
+                records = [r for r in records if r.get("visit_date", "") == today.isoformat()]
+            elif q_range == "week":
+                week_start = today - timedelta(days=today.weekday())
+                records = [r for r in records if str(r.get("visit_date", "")) >= week_start.isoformat()]
+            elif q_range == "month":
+                month_prefix = today.strftime("%Y-%m")
+                records = [r for r in records if str(r.get("visit_date", "")).startswith(month_prefix)]
 
-        self._send_html(render_index(records, q_date, q_name))
+        self._send_html(render_index(records, q_name, q_range))
 
     def do_POST(self):
         if self.path not in {"/add", "/delete"}:
@@ -447,7 +504,7 @@ class AppHandler(BaseHTTPRequestHandler):
             save_records(records)
 
         filters = []
-        for key in ["date", "name"]:
+        for key in ["range", "name"]:
             value = (form.get(key) or [""])[0].strip()
             if value:
                 filters.append(f"{key}={quote_plus(value)}")
