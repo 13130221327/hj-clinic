@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html
 import json
+import csv
+import io
 from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +13,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 DATA_FILE = Path("data/records.json")
 HOST = "0.0.0.0"
 PORT = 8000
+COMMON_FEE_ITEMS = ["挂号", "检查", "洗牙", "补牙", "拔牙", "根管治疗", "牙冠修复", "拍片"]
 
 
 def ensure_data_file() -> None:
@@ -112,6 +115,43 @@ def analysis(records: list[dict]) -> dict:
         "gender_count": gender_count,
         "top_patients": [{"name": name, "count": count} for name, count in top_patients],
     }
+def filter_records(records: list[dict], q_name: str, q_range: str) -> list[dict]:
+    if q_name:
+        return [r for r in records if q_name in str(r.get("patient_name", ""))]
+
+    today = date.today()
+    if q_range == "day":
+        return [r for r in records if r.get("visit_date", "") == today.isoformat()]
+    if q_range == "week":
+        week_start = today - timedelta(days=today.weekday())
+        return [r for r in records if str(r.get("visit_date", "")) >= week_start.isoformat()]
+    if q_range == "month":
+        month_prefix = today.strftime("%Y-%m")
+        return [r for r in records if str(r.get("visit_date", "")).startswith(month_prefix)]
+    return records
+
+
+def export_csv(records: list[dict]) -> bytes:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["日期", "姓名", "性别", "年龄", "电话", "病历号", "主诉", "诊断", "项目", "费用", "备注"])
+    for record in records:
+        writer.writerow(
+            [
+                record.get("visit_date", ""),
+                record.get("patient_name", ""),
+                record.get("gender", ""),
+                record.get("age", ""),
+                record.get("phone", ""),
+                record.get("case_no", ""),
+                record.get("chief_complaint", ""),
+                record.get("diagnosis", ""),
+                record.get("item", "") or summary_items(record),
+                f"{compute_fee(record):.2f}",
+                record.get("note", ""),
+            ]
+        )
+    return output.getvalue().encode("utf-8-sig")
 
 
 def render_index(records: list[dict], q_name: str, q_range: str) -> str:
@@ -130,6 +170,31 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
 
     patient_json = json.dumps(patient_profiles, ensure_ascii=False)
     patient_options = "".join(f"<option value='{escape(name)}'></option>" for name in patient_profiles)
+
+    fee_price_history: dict[str, float] = {}
+    fee_name_pool: set[str] = set(COMMON_FEE_ITEMS)
+    for item in all_records:
+        fee_items = item.get("fee_items")
+        if not isinstance(fee_items, list):
+            continue
+        for fee_item in fee_items:
+            if not isinstance(fee_item, dict):
+                continue
+            fee_name = str(fee_item.get("name", "")).strip()
+            if not fee_name:
+                continue
+            fee_name_pool.add(fee_name)
+            if fee_name in fee_price_history:
+                continue
+            try:
+                fee_price_history[fee_name] = round(max(0.0, float(fee_item.get("price", 0) or 0)), 2)
+            except (TypeError, ValueError):
+                fee_price_history[fee_name] = 0.0
+
+    fee_item_options = "".join(
+        f"<option value='{escape(name)}'></option>" for name in sorted(fee_name_pool)
+    )
+    fee_price_json = json.dumps(fee_price_history, ensure_ascii=False)
     s = stats(all_records)
     a = analysis(all_records)
     today = date.today().isoformat()
@@ -146,7 +211,6 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
           <td>{escape(record.get('phone', ''))}</td>
           <td>{escape(record.get('item', '') or summary_items(record))}</td>
           <td>{fee:.2f}</td>
-          <td>{escape(record.get('payment_method', ''))}</td>
           <td class='note-cell' title='{escape(record.get('note', ''))}'>{escape(record.get('note', ''))}</td>
           <td>
             <form action='/delete' method='post' onsubmit="return confirm('确定删除这条记录吗？')">
@@ -158,7 +222,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
         """
 
     if not row_html:
-        row_html = "<tr><td colspan='9' class='empty-state'>暂无记录</td></tr>"
+        row_html = "<tr><td colspan='7' class='empty-state'>暂无记录</td></tr>"
 
     today_cards = ""
     if today_records:
@@ -175,6 +239,9 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
 
     range_labels = {"day": "日", "week": "周", "month": "月", "all": "全部"}
     active_range = q_range if q_range in range_labels else "day"
+    export_query = f"range={quote_plus(active_range)}"
+    if q_name:
+        export_query += f"&name={quote_plus(q_name)}"
 
     return f"""
 <!doctype html>
@@ -208,9 +275,9 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     .checkbox-field input[type='checkbox'] {{ width:28px; height:28px; }}
     input, select, textarea {{ width: 100%; border: 3px solid var(--line); border-radius: 12px; font-size: 34px; padding: 12px 14px; background: #fff; color: #044962; }}
     textarea {{ min-height: 130px; resize: vertical; }}
-    .inline {{ display: flex; gap: 10px; align-items: end; }}
+    .inline {{ display: flex; gap: 10px; align-items: center; }}
     .btn {{ border: none; border-radius: 12px; padding: 12px 22px; font-size: 32px; cursor: pointer; }}
-    .btn.compact {{ font-size: 24px; padding: 10px 14px; }}
+    .btn.compact {{ font-size: 22px; padding: 0 12px; height: 64px; white-space: nowrap; }}
     .btn.cyan {{ background: #25b8d6; color: white; }}
     .btn.green {{ background: #11a84f; color: white; }}
     .btn.secondary {{ background: #29b8dd; color: white; }}
@@ -318,6 +385,9 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
       <button class='btn secondary' type='submit'>筛选</button>
       <a class='btn' style='text-decoration:none;text-align:center;background:#8cbeca;color:white' href='/?range={escape(active_range)}'>重置</a>
     </form>
+    <div style='margin-top:10px'>
+      <a class='btn secondary' style='text-decoration:none;display:inline-block' href='/export.csv?{export_query}'>导出 CSV</a>
+    </div>
     <div class='quick-filters'>
       <a class='quick-link {"active" if active_range == "day" else ""}' href='/?range=day'>日</a>
       <a class='quick-link {"active" if active_range == "week" else ""}' href='/?range=week'>周</a>
@@ -327,7 +397,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     </div>
     <div class='list-wrap'>
       <table>
-        <thead><tr><th>日期</th><th>姓名</th><th>复诊</th><th>电话</th><th>项目</th><th>费用</th><th>支付</th><th>备注</th><th>操作</th></tr></thead>
+        <thead><tr><th>日期</th><th>姓名</th><th>电话</th><th>项目</th><th>费用</th><th>备注</th><th>操作</th></tr></thead>
         <tbody>{row_html}</tbody>
       </table>
     </div>
@@ -404,6 +474,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
   if (hasRecordFilter) setActiveTab('today');
 
   const feeList = document.getElementById('fee-list');
+  const feePriceHistory = {fee_price_json};
   const addItemBtn = document.getElementById('add-item');
   const totalEl = document.getElementById('grand-total');
   const feeJson = document.getElementById('fee-items-json');
@@ -415,7 +486,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     const row = document.createElement('div');
     row.className = 'fee-row';
     row.innerHTML = `
-      <div class='field'><label>项目名称</label><input class='item-name' type='text' placeholder='如：洗牙、补牙等' value='${{data.name}}'></div>
+      <div class='field'><label>项目名称</label><input class='item-name' type='text' list='fee-item-suggestions' placeholder='如：洗牙、补牙等' value='${{data.name}}'></div>
       <div class='field'><label>单价 (¥)</label><input class='item-price' type='number' step='0.01' min='0' value='${{data.price}}'></div>
       <div class='field'><label>数量</label><input class='item-qty' type='number' min='1' value='${{data.quantity}}'></div>
       <div class='field'><label>小计 (¥)</label><input class='item-subtotal' type='text' readonly value='0.00'></div>
@@ -423,7 +494,18 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     `;
     feeList.appendChild(row);
     row.querySelectorAll('input').forEach(input => input.addEventListener('input', recalc));
+    const itemNameInput = row.querySelector('.item-name');
+    const itemPriceInput = row.querySelector('.item-price');
+    const applyHistoryPrice = () => {{
+      const key = itemNameInput.value.trim();
+      if (!key || !(key in feePriceHistory)) return;
+      itemPriceInput.value = money(feePriceHistory[key]);
+      recalc();
+    }};
+    itemNameInput.addEventListener('change', applyHistoryPrice);
+    itemNameInput.addEventListener('blur', applyHistoryPrice);
     row.querySelector('.remove-row').addEventListener('click', () => {{ row.remove(); recalc(); }});
+    if (data.name) applyHistoryPrice();
     recalc();
   }}
 
@@ -470,6 +552,9 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
 <datalist id='patient-suggestions'>
   {patient_options}
 </datalist>
+<datalist id='fee-item-suggestions'>
+  {fee_item_options}
+</datalist>
 </body>
 </html>
 """
@@ -506,9 +591,18 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
+    def _send_bytes(self, content: bytes, content_type: str, status: int = 200, filename: str | None = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        if filename:
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote_plus(filename)}")
+        self.end_headers()
+        self.wfile.write(content)
+
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path != "/":
+        if parsed.path not in {"/", "/export.csv"}:
             self._send_html("<h1>404 Not Found</h1>", 404)
             return
 
@@ -517,18 +611,12 @@ class AppHandler(BaseHTTPRequestHandler):
         q_range = (params.get("range") or ["day"])[0].strip() or "day"
 
         records = sorted(load_records(), key=lambda x: (x.get("visit_date", ""), x.get("id", 0)), reverse=True)
-        if q_name:
-            records = [r for r in records if q_name in str(r.get("patient_name", ""))]
-        else:
-            today = date.today()
-            if q_range == "day":
-                records = [r for r in records if r.get("visit_date", "") == today.isoformat()]
-            elif q_range == "week":
-                week_start = today - timedelta(days=today.weekday())
-                records = [r for r in records if str(r.get("visit_date", "")) >= week_start.isoformat()]
-            elif q_range == "month":
-                month_prefix = today.strftime("%Y-%m")
-                records = [r for r in records if str(r.get("visit_date", "")).startswith(month_prefix)]
+        records = filter_records(records, q_name, q_range)
+
+        if parsed.path == "/export.csv":
+            filename = f"患者记录_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            self._send_bytes(export_csv(records), "text/csv; charset=utf-8", filename=filename)
+            return
 
         self._send_html(render_index(records, q_name, q_range))
 
