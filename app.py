@@ -318,13 +318,20 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
   const tabs = document.querySelectorAll('.tab-btn');
   const tabNew = document.getElementById('tab-new');
   const tabToday = document.getElementById('tab-today');
-  tabs.forEach(btn => btn.addEventListener('click', () => {{
-    tabs.forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    const isNew = btn.dataset.tab === 'new';
+  function setActiveTab(tabName) {{
+    const isNew = tabName === 'new';
+    tabs.forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
     tabNew.classList.toggle('hidden', !isNew);
     tabToday.classList.toggle('hidden', isNew);
+  }}
+
+  tabs.forEach(btn => btn.addEventListener('click', () => {{
+    setActiveTab(btn.dataset.tab);
   }}));
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const hasRecordFilter = urlParams.has('range') || urlParams.has('name');
+  if (hasRecordFilter) setActiveTab('today');
 
   const feeList = document.getElementById('fee-list');
   const addItemBtn = document.getElementById('add-item');
