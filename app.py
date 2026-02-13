@@ -291,7 +291,10 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     .actions {{ display:flex; gap: 12px; }}
     .stats {{ display:grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 20px; }}
     .analysis-grid {{ display:grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 10px; }}
-    .analysis-item {{ background:#f3fbfd; border:2px solid #bde9f2; border-radius:10px; padding:12px; display:flex; justify-content:space-between; align-items:center; font-size:28px; }}
+    .analysis-item {{ background:#f3fbfd; border:2px solid #bde9f2; border-radius:10px; padding:12px; display:flex; justify-content:space-between; align-items:center; font-size:28px; gap:10px; }}
+    .analysis-item-main {{ display:flex; align-items:center; gap:10px; min-width:0; }}
+    .analysis-icon {{ width:44px; height:44px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:28px; background:#dff4f9; flex-shrink:0; }}
+    .analysis-item-label {{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
     .analysis-item strong {{ color:#0d6f8d; font-size:34px; }}
     .stat {{ background: #edf9fc; border: 2px solid #bce7f0; border-radius: 10px; padding: 12px; }}
     .stat .label {{ font-size: 30px; }}
@@ -412,15 +415,15 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     </div>
     <div class='section-title'>收入概览</div>
     <div class='analysis-grid'>
-      <div class='analysis-item'><span>今日收入</span><strong>¥{s['fee_today']:.2f}</strong></div>
-      <div class='analysis-item'><span>本月收入</span><strong>¥{s['fee_month']:.2f}</strong></div>
-      <div class='analysis-item'><span>累计收入</span><strong>¥{s['fee_all']:.2f}</strong></div>
+      <div class='analysis-item'><div class='analysis-item-main'><span class='analysis-icon'>📅</span><span class='analysis-item-label'>今日收入</span></div><strong>¥{s['fee_today']:.2f}</strong></div>
+      <div class='analysis-item'><div class='analysis-item-main'><span class='analysis-icon'>🗓️</span><span class='analysis-item-label'>本月收入</span></div><strong>¥{s['fee_month']:.2f}</strong></div>
+      <div class='analysis-item'><div class='analysis-item-main'><span class='analysis-icon'>💰</span><span class='analysis-item-label'>累计收入</span></div><strong>¥{s['fee_all']:.2f}</strong></div>
     </div>
     <div class='section-title'>患者分布</div>
     <div class='analysis-grid'>
-      <div class='analysis-item'><span>男性</span><strong>{a['gender_count']['男']}</strong></div>
-      <div class='analysis-item'><span>女性</span><strong>{a['gender_count']['女']}</strong></div>
-      <div class='analysis-item'><span>其他/未知</span><strong>{a['gender_count']['未知']}</strong></div>
+      <div class='analysis-item'><div class='analysis-item-main'><span class='analysis-icon'>👨</span><span class='analysis-item-label'>男性</span></div><strong>{a['gender_count']['男']}</strong></div>
+      <div class='analysis-item'><div class='analysis-item-main'><span class='analysis-icon'>👩</span><span class='analysis-item-label'>女性</span></div><strong>{a['gender_count']['女']}</strong></div>
+      <div class='analysis-item'><div class='analysis-item-main'><span class='analysis-icon'>🧑</span><span class='analysis-item-label'>其他/未知</span></div><strong>{a['gender_count']['未知']}</strong></div>
     </div>
     <div class='section-title'>就诊次数前五</div>
     <div class='list-wrap'>
