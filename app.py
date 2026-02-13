@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html
 import json
+import csv
+import io
 from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -87,6 +89,45 @@ def stats(records: list[dict]) -> dict[str, float | int]:
     }
 
 
+def filter_records(records: list[dict], q_name: str, q_range: str) -> list[dict]:
+    if q_name:
+        return [r for r in records if q_name in str(r.get("patient_name", ""))]
+
+    today = date.today()
+    if q_range == "day":
+        return [r for r in records if r.get("visit_date", "") == today.isoformat()]
+    if q_range == "week":
+        week_start = today - timedelta(days=today.weekday())
+        return [r for r in records if str(r.get("visit_date", "")) >= week_start.isoformat()]
+    if q_range == "month":
+        month_prefix = today.strftime("%Y-%m")
+        return [r for r in records if str(r.get("visit_date", "")).startswith(month_prefix)]
+    return records
+
+
+def export_csv(records: list[dict]) -> bytes:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["日期", "姓名", "性别", "年龄", "电话", "病历号", "主诉", "诊断", "项目", "费用", "备注"])
+    for record in records:
+        writer.writerow(
+            [
+                record.get("visit_date", ""),
+                record.get("patient_name", ""),
+                record.get("gender", ""),
+                record.get("age", ""),
+                record.get("phone", ""),
+                record.get("case_no", ""),
+                record.get("chief_complaint", ""),
+                record.get("diagnosis", ""),
+                record.get("item", "") or summary_items(record),
+                f"{compute_fee(record):.2f}",
+                record.get("note", ""),
+            ]
+        )
+    return output.getvalue().encode("utf-8-sig")
+
+
 def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     all_records = sorted(load_records(), key=lambda x: (x.get("visit_date", ""), x.get("id", 0)), reverse=True)
     patient_profiles: dict[str, dict[str, str]] = {}
@@ -142,7 +183,6 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
           <td>{escape(record.get('phone', ''))}</td>
           <td>{escape(record.get('item', '') or summary_items(record))}</td>
           <td>{fee:.2f}</td>
-          <td>{escape(record.get('payment_method', ''))}</td>
           <td class='note-cell' title='{escape(record.get('note', ''))}'>{escape(record.get('note', ''))}</td>
           <td>
             <form action='/delete' method='post' onsubmit="return confirm('确定删除这条记录吗？')">
@@ -154,7 +194,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
         """
 
     if not row_html:
-        row_html = "<tr><td colspan='8' class='empty-state'>暂无记录</td></tr>"
+        row_html = "<tr><td colspan='7' class='empty-state'>暂无记录</td></tr>"
 
     today_cards = ""
     if today_records:
@@ -171,6 +211,9 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
 
     range_labels = {"day": "日", "week": "周", "month": "月", "all": "全部"}
     active_range = q_range if q_range in range_labels else "day"
+    export_query = f"range={quote_plus(active_range)}"
+    if q_name:
+        export_query += f"&name={quote_plus(q_name)}"
 
     return f"""
 <!doctype html>
@@ -306,6 +349,9 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
       <button class='btn secondary' type='submit'>筛选</button>
       <a class='btn' style='text-decoration:none;text-align:center;background:#8cbeca;color:white' href='/?range={escape(active_range)}'>重置</a>
     </form>
+    <div style='margin-top:10px'>
+      <a class='btn secondary' style='text-decoration:none;display:inline-block' href='/export.csv?{export_query}'>导出 CSV</a>
+    </div>
     <div class='quick-filters'>
       <a class='quick-link {"active" if active_range == "day" else ""}' href='/?range=day'>日</a>
       <a class='quick-link {"active" if active_range == "week" else ""}' href='/?range=week'>周</a>
@@ -315,7 +361,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     </div>
     <div class='list-wrap'>
       <table>
-        <thead><tr><th>日期</th><th>姓名</th><th>电话</th><th>项目</th><th>费用</th><th>支付</th><th>备注</th><th>操作</th></tr></thead>
+        <thead><tr><th>日期</th><th>姓名</th><th>电话</th><th>项目</th><th>费用</th><th>备注</th><th>操作</th></tr></thead>
         <tbody>{row_html}</tbody>
       </table>
     </div>
@@ -477,9 +523,18 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
+    def _send_bytes(self, content: bytes, content_type: str, status: int = 200, filename: str | None = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        if filename:
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote_plus(filename)}")
+        self.end_headers()
+        self.wfile.write(content)
+
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path != "/":
+        if parsed.path not in {"/", "/export.csv"}:
             self._send_html("<h1>404 Not Found</h1>", 404)
             return
 
@@ -488,18 +543,12 @@ class AppHandler(BaseHTTPRequestHandler):
         q_range = (params.get("range") or ["day"])[0].strip() or "day"
 
         records = sorted(load_records(), key=lambda x: (x.get("visit_date", ""), x.get("id", 0)), reverse=True)
-        if q_name:
-            records = [r for r in records if q_name in str(r.get("patient_name", ""))]
-        else:
-            today = date.today()
-            if q_range == "day":
-                records = [r for r in records if r.get("visit_date", "") == today.isoformat()]
-            elif q_range == "week":
-                week_start = today - timedelta(days=today.weekday())
-                records = [r for r in records if str(r.get("visit_date", "")) >= week_start.isoformat()]
-            elif q_range == "month":
-                month_prefix = today.strftime("%Y-%m")
-                records = [r for r in records if str(r.get("visit_date", "")).startswith(month_prefix)]
+        records = filter_records(records, q_name, q_range)
+
+        if parsed.path == "/export.csv":
+            filename = f"患者记录_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            self._send_bytes(export_csv(records), "text/csv; charset=utf-8", filename=filename)
+            return
 
         self._send_html(render_index(records, q_name, q_range))
 
