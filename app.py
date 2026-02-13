@@ -89,6 +89,32 @@ def stats(records: list[dict]) -> dict[str, float | int]:
     }
 
 
+def analysis(records: list[dict]) -> dict:
+    total_fee = round(sum(compute_fee(r) for r in records), 2)
+    total_count = len(records)
+    follow_up_count = sum(1 for r in records if bool(r.get("is_follow_up")))
+    avg_fee = round(total_fee / total_count, 2) if total_count else 0.0
+
+    gender_count: dict[str, int] = {"男": 0, "女": 0, "未知": 0}
+    patient_count: dict[str, int] = {}
+    for record in records:
+        gender = str(record.get("gender", "")).strip() or "未知"
+        if gender not in gender_count:
+            gender_count["未知"] += 1
+        else:
+            gender_count[gender] += 1
+        name = str(record.get("patient_name", "")).strip() or "未命名"
+        patient_count[name] = patient_count.get(name, 0) + 1
+
+    top_patients = sorted(patient_count.items(), key=lambda x: x[1], reverse=True)[:5]
+    return {
+        "total_fee": total_fee,
+        "avg_fee": avg_fee,
+        "follow_up_count": follow_up_count,
+        "follow_up_rate": round(follow_up_count * 100 / total_count, 1) if total_count else 0.0,
+        "gender_count": gender_count,
+        "top_patients": [{"name": name, "count": count} for name, count in top_patients],
+    }
 def filter_records(records: list[dict], q_name: str, q_range: str) -> list[dict]:
     if q_name:
         return [r for r in records if q_name in str(r.get("patient_name", ""))]
@@ -170,6 +196,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     )
     fee_price_json = json.dumps(fee_price_history, ensure_ascii=False)
     s = stats(all_records)
+    a = analysis(all_records)
     today = date.today().isoformat()
     today_records = [r for r in all_records if r.get("visit_date", "") == today]
 
@@ -180,6 +207,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
         <tr>
           <td>{escape(record.get('visit_date', ''))}</td>
           <td>{escape(record.get('patient_name', ''))}</td>
+          <td>{'是' if record.get('is_follow_up') else '否'}</td>
           <td>{escape(record.get('phone', ''))}</td>
           <td>{escape(record.get('item', '') or summary_items(record))}</td>
           <td>{fee:.2f}</td>
@@ -202,7 +230,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
             today_cards += f"""
             <div class='today-card'>
               <div class='today-name'>{escape(item.get('patient_name', '未命名患者'))}</div>
-              <div class='today-meta'>病历号：{escape(item.get('case_no', '-'))} · 金额：¥{compute_fee(item):.2f}</div>
+              <div class='today-meta'>病历号：{escape(item.get('case_no', '-'))} · 金额：¥{compute_fee(item):.2f} · {'复诊' if item.get('is_follow_up') else '初诊'}</div>
               <div class='today-meta'>主诉：{escape(item.get('chief_complaint', '') or item.get('item', ''))}</div>
             </div>
             """
@@ -242,6 +270,9 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     h2 {{ margin: 0 0 18px; color: #048bb2; font-size: 44px; }}
     .grid-2 {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; }}
     .field label {{ display: block; font-size: 34px; margin-bottom: 8px; }}
+    .checkbox-field {{ display:flex; align-items:flex-end; }}
+    .checkbox-field label {{ display:flex; align-items:center; gap:10px; margin-bottom:0; }}
+    .checkbox-field input[type='checkbox'] {{ width:28px; height:28px; }}
     input, select, textarea {{ width: 100%; border: 3px solid var(--line); border-radius: 12px; font-size: 34px; padding: 12px 14px; background: #fff; color: #044962; }}
     textarea {{ min-height: 130px; resize: vertical; }}
     .inline {{ display: flex; gap: 10px; align-items: center; }}
@@ -259,6 +290,9 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     .money-total {{ display:flex; justify-content: space-between; align-items:center; margin-top: 12px; font-size: 50px; color: var(--green); font-weight: 700; }}
     .actions {{ display:flex; gap: 12px; }}
     .stats {{ display:grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 20px; }}
+    .analysis-grid {{ display:grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 10px; }}
+    .analysis-item {{ background:#f3fbfd; border:2px solid #bde9f2; border-radius:10px; padding:12px; display:flex; justify-content:space-between; align-items:center; font-size:28px; }}
+    .analysis-item strong {{ color:#0d6f8d; font-size:34px; }}
     .stat {{ background: #edf9fc; border: 2px solid #bce7f0; border-radius: 10px; padding: 12px; }}
     .stat .label {{ font-size: 30px; }}
     .stat .value {{ font-size: 40px; font-weight: 700; margin-top: 6px; }}
@@ -278,7 +312,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     .quick-link.active {{ background: var(--primary); }}
     .hidden {{ display: none; }}
     @media (max-width: 980px) {{
-      .grid-2,.stats,.today-list,.fee-row,.filter {{ grid-template-columns: 1fr; }}
+      .grid-2,.stats,.today-list,.fee-row,.filter,.analysis-grid {{ grid-template-columns: 1fr; }}
       .tab-btn {{ font-size: 22px; }}
       h2 {{ font-size: 30px; }}
       .field label, input,select,textarea,.btn,.section-title,.stat .label,.today-meta {{ font-size: 20px; }}
@@ -291,6 +325,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
   <div class='tab-switch'>
     <button class='tab-btn active' data-tab='new'>新增患者</button>
     <button class='tab-btn' data-tab='today'>患者记录</button>
+    <button class='tab-btn' data-tab='analysis'>统计分析</button>
   </div>
 
   <section class='panel' id='tab-new'>
@@ -310,6 +345,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
           </div>
         </div>
         <div class='field'><label>就诊日期 *</label><input type='date' name='visit_date' value='{today}' required /></div>
+        <div class='field checkbox-field'><label><input type='checkbox' name='is_follow_up' value='1' /> 是否复诊（一次诊断多次治疗）</label></div>
       </div>
 
       <div class='field' style='margin-top:12px'><label>主诉</label><textarea name='chief_complaint' placeholder='请输入患者主诉...'></textarea></div>
@@ -366,6 +402,34 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
       </table>
     </div>
   </section>
+
+  <section class='panel hidden' id='tab-analysis'>
+    <h2>统计分析</h2>
+    <div class='stats'>
+      <div class='stat'><div class='label'>累计收入(元)</div><div class='value'>{a['total_fee']:.2f}</div></div>
+      <div class='stat'><div class='label'>平均客单价(元)</div><div class='value'>{a['avg_fee']:.2f}</div></div>
+      <div class='stat'><div class='label'>复诊率</div><div class='value'>{a['follow_up_rate']:.1f}%</div></div>
+    </div>
+    <div class='section-title'>收入概览</div>
+    <div class='analysis-grid'>
+      <div class='analysis-item'><span>今日收入</span><strong>¥{s['fee_today']:.2f}</strong></div>
+      <div class='analysis-item'><span>本月收入</span><strong>¥{s['fee_month']:.2f}</strong></div>
+      <div class='analysis-item'><span>累计收入</span><strong>¥{s['fee_all']:.2f}</strong></div>
+    </div>
+    <div class='section-title'>患者分布</div>
+    <div class='analysis-grid'>
+      <div class='analysis-item'><span>男性</span><strong>{a['gender_count']['男']}</strong></div>
+      <div class='analysis-item'><span>女性</span><strong>{a['gender_count']['女']}</strong></div>
+      <div class='analysis-item'><span>其他/未知</span><strong>{a['gender_count']['未知']}</strong></div>
+    </div>
+    <div class='section-title'>就诊次数前五</div>
+    <div class='list-wrap'>
+      <table>
+        <thead><tr><th>患者</th><th>就诊次数</th></tr></thead>
+        <tbody>{''.join(f"<tr><td>{escape(p['name'])}</td><td>{p['count']}</td></tr>" for p in a['top_patients']) or "<tr><td colspan='2' class='empty-state'>暂无数据</td></tr>"}</tbody>
+      </table>
+    </div>
+  </section>
 </div>
 <script>
 (function() {{
@@ -390,11 +454,15 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
   const tabs = document.querySelectorAll('.tab-btn');
   const tabNew = document.getElementById('tab-new');
   const tabToday = document.getElementById('tab-today');
+  const tabAnalysis = document.getElementById('tab-analysis');
   function setActiveTab(tabName) {{
     const isNew = tabName === 'new';
+    const isToday = tabName === 'today';
+    const isAnalysis = tabName === 'analysis';
     tabs.forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
     tabNew.classList.toggle('hidden', !isNew);
-    tabToday.classList.toggle('hidden', isNew);
+    tabToday.classList.toggle('hidden', !isToday);
+    tabAnalysis.classList.toggle('hidden', !isAnalysis);
   }}
 
   tabs.forEach(btn => btn.addEventListener('click', () => {{
@@ -578,6 +646,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     {
                         "id": next_id(records),
                         "visit_date": (form.get("visit_date") or [date.today().isoformat()])[0],
+                        "is_follow_up": bool((form.get("is_follow_up") or [""])[0]),
                         "patient_name": patient_name,
                         "gender": gender,
                         "age": (form.get("age") or [""])[0].strip(),
