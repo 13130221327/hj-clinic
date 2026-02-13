@@ -222,7 +222,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
         """
 
     if not row_html:
-        row_html = "<tr><td colspan='7' class='empty-state'>暂无记录</td></tr>"
+        row_html = "<tr><td colspan='8' class='empty-state'>暂无记录</td></tr>"
 
     today_cards = ""
     if today_records:
@@ -397,7 +397,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     </div>
     <div class='list-wrap'>
       <table>
-        <thead><tr><th>日期</th><th>姓名</th><th>电话</th><th>项目</th><th>费用</th><th>备注</th><th>操作</th></tr></thead>
+        <thead><tr><th>日期</th><th>姓名</th><th>复诊</th><th>电话</th><th>项目</th><th>费用</th><th>备注</th><th>操作</th></tr></thead>
         <tbody>{row_html}</tbody>
       </table>
     </div>
