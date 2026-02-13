@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 DATA_FILE = Path("data/records.json")
 HOST = "0.0.0.0"
 PORT = 8000
+COMMON_FEE_ITEMS = ["挂号", "检查", "洗牙", "补牙", "拔牙", "根管治疗", "牙冠修复", "拍片"]
 
 
 def ensure_data_file() -> None:
@@ -102,6 +103,31 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
 
     patient_json = json.dumps(patient_profiles, ensure_ascii=False)
     patient_options = "".join(f"<option value='{escape(name)}'></option>" for name in patient_profiles)
+
+    fee_price_history: dict[str, float] = {}
+    fee_name_pool: set[str] = set(COMMON_FEE_ITEMS)
+    for item in all_records:
+        fee_items = item.get("fee_items")
+        if not isinstance(fee_items, list):
+            continue
+        for fee_item in fee_items:
+            if not isinstance(fee_item, dict):
+                continue
+            fee_name = str(fee_item.get("name", "")).strip()
+            if not fee_name:
+                continue
+            fee_name_pool.add(fee_name)
+            if fee_name in fee_price_history:
+                continue
+            try:
+                fee_price_history[fee_name] = round(max(0.0, float(fee_item.get("price", 0) or 0)), 2)
+            except (TypeError, ValueError):
+                fee_price_history[fee_name] = 0.0
+
+    fee_item_options = "".join(
+        f"<option value='{escape(name)}'></option>" for name in sorted(fee_name_pool)
+    )
+    fee_price_json = json.dumps(fee_price_history, ensure_ascii=False)
     s = stats(all_records)
     today = date.today().isoformat()
     today_records = [r for r in all_records if r.get("visit_date", "") == today]
@@ -175,9 +201,9 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     .field label {{ display: block; font-size: 34px; margin-bottom: 8px; }}
     input, select, textarea {{ width: 100%; border: 3px solid var(--line); border-radius: 12px; font-size: 34px; padding: 12px 14px; background: #fff; color: #044962; }}
     textarea {{ min-height: 130px; resize: vertical; }}
-    .inline {{ display: flex; gap: 10px; align-items: end; }}
+    .inline {{ display: flex; gap: 10px; align-items: center; }}
     .btn {{ border: none; border-radius: 12px; padding: 12px 22px; font-size: 32px; cursor: pointer; }}
-    .btn.compact {{ font-size: 24px; padding: 10px 14px; }}
+    .btn.compact {{ font-size: 22px; padding: 0 12px; height: 64px; white-space: nowrap; }}
     .btn.cyan {{ background: #25b8d6; color: white; }}
     .btn.green {{ background: #11a84f; color: white; }}
     .btn.secondary {{ background: #29b8dd; color: white; }}
@@ -334,6 +360,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
   if (hasRecordFilter) setActiveTab('today');
 
   const feeList = document.getElementById('fee-list');
+  const feePriceHistory = {fee_price_json};
   const addItemBtn = document.getElementById('add-item');
   const totalEl = document.getElementById('grand-total');
   const feeJson = document.getElementById('fee-items-json');
@@ -345,7 +372,7 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     const row = document.createElement('div');
     row.className = 'fee-row';
     row.innerHTML = `
-      <div class='field'><label>项目名称</label><input class='item-name' type='text' placeholder='如：洗牙、补牙等' value='${{data.name}}'></div>
+      <div class='field'><label>项目名称</label><input class='item-name' type='text' list='fee-item-suggestions' placeholder='如：洗牙、补牙等' value='${{data.name}}'></div>
       <div class='field'><label>单价 (¥)</label><input class='item-price' type='number' step='0.01' min='0' value='${{data.price}}'></div>
       <div class='field'><label>数量</label><input class='item-qty' type='number' min='1' value='${{data.quantity}}'></div>
       <div class='field'><label>小计 (¥)</label><input class='item-subtotal' type='text' readonly value='0.00'></div>
@@ -353,7 +380,18 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
     `;
     feeList.appendChild(row);
     row.querySelectorAll('input').forEach(input => input.addEventListener('input', recalc));
+    const itemNameInput = row.querySelector('.item-name');
+    const itemPriceInput = row.querySelector('.item-price');
+    const applyHistoryPrice = () => {{
+      const key = itemNameInput.value.trim();
+      if (!key || !(key in feePriceHistory)) return;
+      itemPriceInput.value = money(feePriceHistory[key]);
+      recalc();
+    }};
+    itemNameInput.addEventListener('change', applyHistoryPrice);
+    itemNameInput.addEventListener('blur', applyHistoryPrice);
     row.querySelector('.remove-row').addEventListener('click', () => {{ row.remove(); recalc(); }});
+    if (data.name) applyHistoryPrice();
     recalc();
   }}
 
@@ -399,6 +437,9 @@ def render_index(records: list[dict], q_name: str, q_range: str) -> str:
 </script>
 <datalist id='patient-suggestions'>
   {patient_options}
+</datalist>
+<datalist id='fee-item-suggestions'>
+  {fee_item_options}
 </datalist>
 </body>
 </html>
